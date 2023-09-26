@@ -29,7 +29,7 @@ export async function checkAccountBalance(addressToCheck: string | undefined) {
       const balance = await ltcSDK.blockchain.getBlockchainAccountBalance(
         addressToCheck
       );
-      return String(Number(balance.incoming) - Number(balance.outgoing));
+      return (Number(balance.incoming) - Number(balance.outgoing)).toFixed(8);
     } catch (error) {
       throw "Такого аккаунта не существует.";
     }
@@ -38,19 +38,23 @@ export async function checkAccountBalance(addressToCheck: string | undefined) {
 
 export async function checkTransactionByUSD(value: number, litecoin: boolean) {
   const address = process.env.MY_ADDRESS || "";
-  console.log(address);
+  var response = [];
   var valueNew;
   if (litecoin) {
-    valueNew = value;
+    valueNew = Number(value.toFixed(8));
   } else {
     const LTCrateRUB = await ltcSDK.getExchangeRate(Fiat.RUB);
-    valueNew = value / Number(LTCrateRUB.value);
+    value = value / Number(LTCrateRUB.value);
+    valueNew = Number(value.toFixed(8));
   }
+  console.log(valueNew);
   try {
     const txByAddress = await ltcSDK.blockchain.getTransactionsByAddress(
       address,
       10
     );
+
+    console.log(txByAddress);
 
     for (let i = 0; i < txByAddress.length; i++) {
       var txInfo = txByAddress[i];
@@ -64,11 +68,11 @@ export async function checkTransactionByUSD(value: number, litecoin: boolean) {
               txOutputsJth.address === address &&
               moreOrLessThanNum(Number(txOutputsJth.value), valueNew, 0.15)
             ) {
-              return {
+              response.push({
                 hash: JSON.stringify(txByAddress[i].hash),
                 index: j,
                 value: Number(Number(txOutputsJth.value).toFixed(8)),
-              };
+              });
             }
           }
         } else {
@@ -80,7 +84,7 @@ export async function checkTransactionByUSD(value: number, litecoin: boolean) {
         throw "400";
       }
     }
-    return undefined;
+    return response;
   } catch (error) {
     console.log("There was an error", error);
     throw "400";
@@ -89,16 +93,15 @@ export async function checkTransactionByUSD(value: number, litecoin: boolean) {
 
 export async function make_transaction(
   valueToSend1: number,
-  recipientAddress1: string,
-  share: number
+  recipientAddress1: string
 ) {
   const privateKey = process.env.MY_PRIVATE_KEY || "";
-  var valueToSend = valueToSend1 * share;
+  var valueToSend = valueToSend1;
   valueToSend = Number(valueToSend.toFixed(8));
   var recipientAddress = recipientAddress1;
   const fee = process.env.FEE;
   const changeAddress = process.env.MY_ADDRESS || "";
-
+  console.log(valueToSend, recipientAddress);
   const options = { testnet: false };
 
   try {

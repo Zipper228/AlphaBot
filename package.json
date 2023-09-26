@@ -6,6 +6,7 @@
   "type": "module",
   "dependencies": {
     "@grammyjs/conversations": "^1.1.2",
+    "@grammyjs/menu": "^1.2.1",
     "@tatumio/ltc": "^2.2.34",
     "acorn": "^8.10.0",
     "acorn-walk": "^8.2.0",

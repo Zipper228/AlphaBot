@@ -1,22 +1,9 @@
 import mysql from "mysql2";
 import dotenv from "dotenv";
-import express from "express";
-import { bot } from "./bot.js";
+import express, { query } from "express";
 import { webhookCallback } from "grammy";
-
+import { bot } from "./bot.js";
 dotenv.config();
-
-const app = express();
-
-app.use(express.json());
-app.use(`/${process.env.BOT_TOKEN}`, webhookCallback(bot, "express"));
-
-app.listen(Number(process.env.PORT), async () => {
-  // Make sure it is `https` not `http`!
-  await bot.api.setWebhook(
-    `https://${process.env.DOMAIN}/${process.env.BOT_TOKEN}`
-  );
-});
 
 const pool = mysql
   .createPool({
@@ -39,7 +26,7 @@ export async function createTableUsers() {
     await pool.query(
       "CREATE TABLE IF NOT EXISTS " +
         process.env.MYSQL_TABLE_NAME_USERS +
-        " (address VARCHAR(50) NOT NULL, teleg_id INT NOT NULL, share FLOAT NOT NULL, balance FLOAT NOT NULL, PRIMARY KEY (teleg_id))"
+        " (address VARCHAR(50) NOT NULL, teleg_id INT NOT NULL, username VARCHAR(40), share FLOAT NOT NULL, balance FLOAT NOT NULL, PRIMARY KEY (teleg_id))"
     );
   } catch (error) {
     console.log("ERROR IN CREATETABLEUSERS " + error);
@@ -60,6 +47,18 @@ export async function createTableLogs() {
   }
 }
 
+export async function createTableTrans() {
+  try {
+    await pool.query(
+      "CREATE TABLE IF NOT EXISTS " +
+        process.env.MYSQL_TABLE_NAME_TRANS +
+        " (id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, hash VARCHAR(70) NOT NULL)"
+    );
+  } catch (error) {
+    console.log("ERROR IN CREATETABLETRANS " + error);
+  }
+}
+
 export async function getUser(id: number) {
   try {
     const [result] = await pool.query(
@@ -68,7 +67,21 @@ export async function getUser(id: number) {
         " WHERE teleg_id = ?",
       [id]
     );
-    return JSON.parse(JSON.stringify(result));
+    return JSON.parse(JSON.stringify(result))[0];
+  } catch (error) {
+    console.log("ERROR IN GETuser " + error);
+  }
+}
+
+export async function getUserByName(username: string) {
+  try {
+    const [result] = await pool.query(
+      "SELECT teleg_id FROM " +
+        process.env.MYSQL_TABLE_NAME_USERS +
+        " WHERE username = ?",
+      [username]
+    );
+    return JSON.parse(JSON.stringify(result))[0];
   } catch (error) {
     console.log("ERROR IN GETuser " + error);
   }
@@ -86,6 +99,35 @@ export async function getLogs(user_id: number) {
     return [JSON.parse(JSON.stringify(result))];
   } catch (error) {
     console.log("ERROR IN GETLOGS " + error);
+  }
+}
+
+export async function getTrans(hash: string) {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM " + process.env.MYSQL_TABLE_NAME_TRANS + " WHERE hash = ?",
+      [hash]
+    );
+    let resultOne = JSON.parse(JSON.stringify(result));
+    return resultOne[0];
+  } catch (error) {
+    console.log("ERROR IN GETTRANS " + error);
+  }
+}
+
+export async function usableBalance(balance: number) {
+  try {
+    var [balances] = await pool.query(
+      "SELECT balance FROM " + process.env.MYSQL_TABLE_NAME_USERS
+    );
+    var result = JSON.parse(JSON.stringify(balances));
+    for (let i = 0; i < result.length; i++) {
+      balance -= result[i].balance;
+      console.log(result[i].balance);
+    }
+    return balance;
+  } catch (error) {
+    throw error;
   }
 }
 
@@ -130,6 +172,44 @@ export async function createLog(user_id: number, value: number) {
   }
 }
 
+export async function createTrans(hash: string) {
+  try {
+    const result = await pool.query(
+      "INSERT INTO " + process.env.MYSQL_TABLE_NAME_TRANS + "(hash) VALUES (?)",
+      [hash]
+    );
+
+    var [bydate] = await pool.query(
+      "SELECT id FROM " +
+        process.env.MYSQL_TABLE_NAME_TRANS +
+        " WHERE hash = ? ORDER BY id DESC LIMIT 10 OFFSET " +
+        process.env.MYSQL_TRANS_SAVE_NUM,
+      [hash]
+    );
+
+    const bydateRes = JSON.parse(JSON.stringify(bydate));
+
+    if (bydateRes.length === 0) {
+      return [JSON.parse(JSON.stringify(result)), bydateRes];
+    }
+
+    var stringRequest =
+      "DELETE FROM " + process.env.MYSQL_TABLE_NAME_TRANS + " WHERE";
+    for (let i = 0; i < bydateRes.length; i++) {
+      if (i !== 0) {
+        stringRequest += " OR";
+      }
+      stringRequest += " id = " + String(bydateRes[i].id);
+    }
+
+    await pool.query(stringRequest);
+
+    return JSON.parse(JSON.stringify(result));
+  } catch (error) {
+    console.log("ERROR IN CREATETRANS " + error);
+  }
+}
+
 export async function deleteUser(teleg_id: number) {
   try {
     await pool.query(
@@ -151,6 +231,7 @@ export async function deleteUser(teleg_id: number) {
 export async function createUser(
   teleg_id: number,
   address: string,
+  username?: string,
   share?: number
 ) {
   try {
@@ -158,8 +239,8 @@ export async function createUser(
     const result = await pool.query(
       "INSERT INTO " +
         process.env.MYSQL_TABLE_NAME_USERS +
-        " (teleg_id, address, share, balance) VALUES (?, ?, ?, ?)",
-      [teleg_id, address, shareUpdated, 0]
+        " (teleg_id, address, username, share, balance) VALUES (?, ?, ?, ?, ?)",
+      [teleg_id, address, username, shareUpdated, 0]
     );
 
     return JSON.parse(JSON.stringify(result));
@@ -207,7 +288,7 @@ export async function updateBalance(
   increase: boolean
 ) {
   const user = await getUser(teleg_id);
-  var balance = user[0].balance;
+  var balance = user.balance;
   console.log(balance);
   if (increase) {
     balance += value;
@@ -225,7 +306,7 @@ export async function dropTable(table: string) {
 
 export async function checkUser(teleg_id: number) {
   const user = await getUser(teleg_id);
-  if (user.length > 0) {
+  if (user !== undefined) {
     return false;
   } else {
     return true;
@@ -233,4 +314,7 @@ export async function checkUser(teleg_id: number) {
 }
 
 //await dropTable(process.env.MYSQL_TABLE_NAME_LOGS || "");
-//await dropTable(process.env.MYSQL_TABLE_NAME_USERS || "");
+await dropTable(process.env.MYSQL_TABLE_NAME_TRANS || "");
+await createTableTrans();
+//deleteUser(875460557);
+//console.log(await usableBalance(100));
