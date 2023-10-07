@@ -14,11 +14,16 @@ export function datetime() {
     const dateSQL = date.toISOString().split("T")[0] + " " + date.toTimeString().split(" ")[0];
     return dateSQL;
 }
+export function parseFloat(number, decimal_places) {
+    let numberStr = number.toString();
+    numberStr = numberStr.slice(0, numberStr.indexOf(".") + decimal_places + 1);
+    return Number(numberStr);
+}
 export async function createTableUsers() {
     try {
         await pool.query("CREATE TABLE IF NOT EXISTS " +
             process.env.MYSQL_TABLE_NAME_USERS +
-            " ( teleg_id INTEGER PRIMARY KEY NOT NULL, address VARCHAR(35) NOT NULL, share FLOAT NOT NULL)");
+            " (address VARCHAR(50) NOT NULL, teleg_id INT NOT NULL, username VARCHAR(40), share FLOAT NOT NULL, balance FLOAT NOT NULL, allowed_cash_out BOOLEAN NOT NULL, paid_user BOOLEAN NOT NULL, PRIMARY KEY (teleg_id))");
     }
     catch (error) {
         console.log("ERROR IN CREATETABLEUSERS " + error);
@@ -36,12 +41,43 @@ export async function createTableLogs() {
         console.log("ERROR IN CREATETABLELOGS " + error);
     }
 }
+export async function createTableAdmins() {
+    try {
+        await pool.query("CREATE TABLE IF NOT EXISTS " +
+            process.env.MYSQL_TABLE_NAME_ADMINS +
+            " (user_id INT NOT NULL, username VARCHAR(40))");
+    }
+    catch (error) {
+        console.log("ERROR IN CREATETABLELOGS " + error);
+    }
+}
+export async function createTableTrans() {
+    try {
+        await pool.query("CREATE TABLE IF NOT EXISTS " +
+            process.env.MYSQL_TABLE_NAME_TRANS +
+            " (id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, hash VARCHAR(70) NOT NULL)");
+    }
+    catch (error) {
+        console.log("ERROR IN CREATETABLETRANS " + error);
+    }
+}
 export async function getUser(id) {
     try {
         const [result] = await pool.query("SELECT * FROM " +
             process.env.MYSQL_TABLE_NAME_USERS +
             " WHERE teleg_id = ?", [id]);
-        return JSON.parse(JSON.stringify(result));
+        return JSON.parse(JSON.stringify(result))[0];
+    }
+    catch (error) {
+        console.log("ERROR IN GETuser " + error);
+    }
+}
+export async function getUserByName(username) {
+    try {
+        const [result] = await pool.query("SELECT teleg_id FROM " +
+            process.env.MYSQL_TABLE_NAME_USERS +
+            " WHERE username = ?", [username]);
+        return JSON.parse(JSON.stringify(result))[0];
     }
     catch (error) {
         console.log("ERROR IN GETuser " + error);
@@ -58,11 +94,47 @@ export async function getLogs(user_id) {
         console.log("ERROR IN GETLOGS " + error);
     }
 }
-export async function createLog(user_id, datetime, value) {
+export async function getTrans(hash) {
+    try {
+        const result = await pool.query("SELECT * FROM " + process.env.MYSQL_TABLE_NAME_TRANS + " WHERE hash = ?", [hash]);
+        let resultOne = JSON.parse(JSON.stringify(result));
+        return resultOne[0];
+    }
+    catch (error) {
+        console.log("ERROR IN GETTRANS " + error);
+    }
+}
+export async function deleteTrans(hash) {
+    try {
+        console.log(hash);
+        console.log(await getTrans('"' + hash + '"'));
+        await pool.query("DELETE FROM " + process.env.MYSQL_TABLE_NAME_TRANS + " WHERE hash = ?", ['"' + hash + '"']);
+    }
+    catch (error) {
+        console.log("ERROR IN DELETETRANS " + error);
+        throw "Ошибка";
+    }
+}
+export async function usableBalance(balance) {
+    try {
+        var [balances] = await pool.query("SELECT balance FROM " + process.env.MYSQL_TABLE_NAME_USERS);
+        var result = JSON.parse(JSON.stringify(balances));
+        for (let i = 0; i < result.length; i++) {
+            balance -= result[i].balance;
+            console.log(result[i].balance);
+        }
+        return balance;
+    }
+    catch (error) {
+        throw error;
+    }
+}
+export async function createLog(user_id, value) {
+    const dateTime = datetime();
     try {
         const result = await pool.query("INSERT INTO " +
             process.env.MYSQL_TABLE_NAME_LOGS +
-            "(user_id, datetime, value) VALUES (?, ?, ?)", [user_id, datetime, value]);
+            "(user_id, datetime, value) VALUES (?, ?, ?)", [user_id, dateTime, value]);
         var [bydate] = await pool.query("SELECT id FROM " +
             process.env.MYSQL_TABLE_NAME_LOGS +
             " WHERE user_id = ? ORDER BY id DESC LIMIT 10 OFFSET " +
@@ -85,39 +157,161 @@ export async function createLog(user_id, datetime, value) {
         console.log("ERROR IN CREATELOG " + error);
     }
 }
-export async function createUser(teleg_id, address, share) {
+export async function createTrans(hash) {
     try {
+        const result = await pool.query("INSERT INTO " + process.env.MYSQL_TABLE_NAME_TRANS + "(hash) VALUES (?)", [hash]);
+        var [bydate] = await pool.query("SELECT id FROM " +
+            process.env.MYSQL_TABLE_NAME_TRANS +
+            " WHERE hash = ? ORDER BY id DESC LIMIT 10 OFFSET " +
+            process.env.MYSQL_TRANS_SAVE_NUM, [hash]);
+        const bydateRes = JSON.parse(JSON.stringify(bydate));
+        if (bydateRes.length === 0) {
+            return [JSON.parse(JSON.stringify(result)), bydateRes];
+        }
+        var stringRequest = "DELETE FROM " + process.env.MYSQL_TABLE_NAME_TRANS + " WHERE";
+        for (let i = 0; i < bydateRes.length; i++) {
+            if (i !== 0) {
+                stringRequest += " OR";
+            }
+            stringRequest += " id = " + String(bydateRes[i].id);
+        }
+        await pool.query(stringRequest);
+        return JSON.parse(JSON.stringify(result));
+    }
+    catch (error) {
+        console.log("ERROR IN CREATETRANS " + error);
+    }
+}
+export async function deleteUser(teleg_id) {
+    try {
+        await pool.query("DELETE FROM " + process.env.MYSQL_TABLE_NAME_LOGS + " WHERE user_id = ?", [teleg_id]);
+        await pool.query("DELETE FROM " +
+            process.env.MYSQL_TABLE_NAME_USERS +
+            " WHERE teleg_id = ?", [teleg_id]);
+    }
+    catch (error) {
+        console.log("ERROR IN DELETEUSER " + error);
+    }
+}
+export async function createUser(teleg_id, address, username, share) {
+    try {
+        const shareUpdated = share || process.env.DEFAULT_SHARE || 0.15;
+        console.log();
         const result = await pool.query("INSERT INTO " +
             process.env.MYSQL_TABLE_NAME_USERS +
-            "(teleg_id, address, share) VALUES (?, ?, ?)", [teleg_id, address, share]);
+            " (teleg_id, address, username, share, balance, allowed_cash_out, paid_user) VALUES (?, ?, ?, ?, ?, ?, ?)", [teleg_id, address, username, shareUpdated, 0, false, false]);
         return JSON.parse(JSON.stringify(result));
     }
     catch (error) {
         console.log("ERROR IN CREATEUSERS " + error);
     }
 }
-export async function updateUsers(teleg_id, toUpdate, newValue) {
+export async function createAdmin(teleg_id, username) {
     try {
-        await pool.query("UPDATE " +
-            process.env.MYSQL_TABLE_NAME_USERS +
-            " SET " +
-            toUpdate +
-            " = ? WHERE id = ?", [newValue, teleg_id]);
+        const result = await pool.query("INSERT INTO " +
+            process.env.MYSQL_TABLE_NAME_ADMINS +
+            " (user_id, username) VALUES (?, ?)", [teleg_id, username]);
+        return JSON.parse(JSON.stringify(result));
     }
     catch (error) {
-        console.log("ERROR IN UPDATEUSERS " + error);
+        console.log("ERROR IN CREATEADMINS " + error);
     }
 }
-createTableUsers();
-createTableLogs();
-//await createUser(123, "hhh", 0.15);
-for (let i = 0; i < 3; i++) {
-    var time = datetime();
-    await createLog(123, time, i + 0.15);
-    console.log(await getLogs(123));
+export async function getAdmin(user_id) {
+    try {
+        if (user_id !== undefined) {
+            const [result] = await pool.query("SELECT * FROM " +
+                process.env.MYSQL_TABLE_NAME_ADMINS +
+                " WHERE user_id = ?", [user_id]);
+            return JSON.parse(JSON.stringify(result))[0];
+        }
+        const [result] = await pool.query("SELECT * FROM " + process.env.MYSQL_TABLE_NAME_ADMINS);
+        return JSON.parse(JSON.stringify(result));
+    }
+    catch (error) {
+        console.log("ERROR IN GETADMIN " + error);
+    }
 }
-for (let i = 0; i < 3; i++) {
-    var time = datetime();
-    await createLog(123, time, i + 0.15);
-    console.log(await getLogs(123));
+export async function checkAdmin(teleg_id) {
+    const user = await getAdmin(teleg_id);
+    console.log(user);
+    if (user === undefined) {
+        return false;
+    }
+    else {
+        return true;
+    }
 }
+export async function updateUsers(teleg_id, toUpdate, newValue) {
+    if (toUpdate === "address") {
+        console.log(typeof newValue);
+        newValue = String(newValue);
+        console.log("was");
+    }
+    if (teleg_id !== undefined) {
+        try {
+            await pool.query("UPDATE " +
+                process.env.MYSQL_TABLE_NAME_USERS +
+                " SET " +
+                toUpdate +
+                " = ? WHERE teleg_id = ?", [newValue, teleg_id]);
+        }
+        catch (error) {
+            console.log("ERROR IN UPDATEUSER " + error);
+        }
+    }
+    else {
+        try {
+            await pool.query("UPDATE " +
+                process.env.MYSQL_TABLE_NAME_USERS +
+                " SET " +
+                toUpdate +
+                " = ?", [newValue]);
+        }
+        catch (error) {
+            console.log("ERROR IN UPDATEUSERS " + error);
+        }
+    }
+}
+export async function updateBalance(teleg_id, value, increase) {
+    const user = await getUser(teleg_id);
+    var balance = user.balance;
+    console.log(balance);
+    if (increase) {
+        balance += value;
+    }
+    else {
+        balance -= value;
+    }
+    balance = parseFloat(balance, 2);
+    await updateUsers(teleg_id, "balance", balance);
+}
+export async function dropTable(table) {
+    await pool.query("DROP TABLE " + table);
+}
+export async function deleteEverything() {
+    try {
+        await dropTable(process.env.MYSQL_TABLE_NAME_ADMINS || "");
+        await dropTable(process.env.MYSQL_TABLE_NAME_LOGS || "");
+        await dropTable(process.env.MYSQL_TABLE_NAME_TRANS || "");
+        await dropTable(process.env.MYSQL_TABLE_NAME_USERS || "");
+        await createTableUsers();
+        await createTableLogs();
+        await createTableTrans();
+        await createTableAdmins();
+    }
+    catch (error) {
+        console.log("ERROR in DELETEEVERYTHING " + error);
+        throw "Ошибка в DELETEEVERYTHING";
+    }
+}
+export async function checkUser(teleg_id) {
+    const user = await getUser(teleg_id);
+    if (user !== undefined) {
+        return false;
+    }
+    else {
+        return true;
+    }
+}
+
